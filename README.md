@@ -90,6 +90,7 @@ xrt::device::device(0)
 xrt::device::load_xclbin(foo.xclbin)
 xrt::device::~device()
 xrt::device_impl::~device_impl()
+```
 
 ## Capture
 Use LD_PRELOAD to preload `libxrt_capture`.

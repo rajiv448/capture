@@ -38,9 +38,9 @@ capture
 The capture library is built from `core/capture` into `libxrt_capture`
 and linked with `libxrt_coreutil`.
 
-The capture implementation redefines the XRT api symbols that are
-defined in `libxrt_coreutil` and which needs to be capture into a time
-line, for example `xrt::device` APIs are defined in `libxrt_capture`.
+The capture implementation redefines the XRT API symbols defined in
+`libxrt_coreutil` which needs to be captured into a time line, for
+example `xrt::device` APIs are defined in `libxrt_capture`.
 
 The idea is that if `libxrt_capture` is loaded before `libxrt_coreutil`
 then the defintion of exported APIs will come from `libxrt_capture`.
@@ -53,6 +53,11 @@ library into `libxrt_coreutil` must be into wrapper functions that
 immediately calls the public API implementation.  These wrappers are
 implemented in the same compilation units that define the actual
 public APIs (e.g. `xrt_device.cpp`).
+
+Since all public XRT objects are implemented in an opaque pimpl, the
+wrappers can create a *real* XRT object and just steal the opaque
+impl. So any XRT object created from `libxrt_capture` will be a valid
+object that can be used with our without going through the capture library.
 
 The library `libxrt_coreutil` is built with `-Bdynamic` link option which
 ensure that symbols referenced in `libxrt_coreutil` are resolved within

@@ -33,4 +33,14 @@ namespace run {
   
 } // xrt_core::capture
 
+#ifdef _WIN32
+#ifdef __cplusplus
+extern "C" {
+#endif
+	int idt_fixup( void *dummy );
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #endif

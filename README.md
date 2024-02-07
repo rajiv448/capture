@@ -14,25 +14,28 @@ Mirrors code from https://github.com/Xilinx/XRT.
 
 ```
 capture
+├── cliloader
+│   ├── cliloader.cpp
+│   └── CMakeLists.txt
 ├── CMakeLists.txt
-├── LICENSE
-├── README.md
 ├── core
 │   ├── capture
-│   │   ├── CMakeLists.txt
-│   │   └── capture.cpp
+│   │   ├── capture.cpp
+│   │   └── CMakeLists.txt
 │   ├── common
-│   │   ├── CMakeLists.txt
-│   │   └── api
-│   │       ├── capture.h
-│   │       └── xrt_device.cpp
+│   │   ├── api
+│   │   │   ├── capture.h
+│   │   │   └── xrt_device.cpp
+│   │   └── CMakeLists.txt
 │   └── include
 │       └── xrt
 │           ├── CMakeLists.txt
 │           └── xrt_device.h
+├── LICENSE
+├── README.md
 └── test
     ├── CMakeLists.txt
-    └── main.cpp
+        └── main.cpp
 ```
 
 The capture library is built from `core/capture` into `libxrt_capture`
@@ -63,6 +66,16 @@ The library `libxrt_coreutil` is built with `-Bdynamic` link option which
 ensure that symbols referenced in `libxrt_coreutil` are resolved within
 this library and wont recurse to `libxrt_capture`.
 
+To support interception on windows we have added `cliloader`. This application
+would load the application and do platform dependent plumbing. For now, this 
+application only supporting windows, we would add linux support soon.
+
+On windows platform `cliloader` launches the application in a child process in
+suspended state the loads the `xrt_capture.dll`. It then updates the function
+pointer in the IDT to point to the `xrt_capture.dll` instead of
+`xrt_coreutil.dll`. Once IDT is updated, it lets the child process run and
+waits for completion. 
+
 ## Building
 Build using CMake from root directory.
 ```
@@ -73,7 +86,7 @@ Build using CMake from root directory.
 ````
 This builds `libxrt_coreutil`, `libxrt_capture`, and `main` test executuble.
 
-## Run
+## Run (Linux)
 Run the test making sure `LD_LIBRARY_PATH` can find `libxrt_coreutil` then run as
 
 ```
@@ -92,7 +105,7 @@ xrt::device::~device()
 xrt::device_impl::~device_impl()
 ```
 
-## Capture
+## Capture (Linux)
 Use LD_PRELOAD to preload `libxrt_capture`.
 
 ```
@@ -112,4 +125,56 @@ capture|xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()
 ```
 
+## Run (Windows)
+Run the main.exe to execute the application as follows from the build directory
+following also show the library dependancies.
+
+```
+>dumpbin /DEPENDENTS bin\main.exe
+Microsoft (R) COFF/PE Dumper Version 14.38.33133.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file bin\main.exe
+
+File Type: EXECUTABLE IMAGE
+
+  Image has the following dependencies:
+
+    xrt_coreutil.dll
+    MSVCP140D.dll
+    VCRUNTIME140D.dll
+    VCRUNTIME140_1D.dll
+    ucrtbased.dll
+    KERNEL32.dll
+...
+
+>bin\main.exe
+xrt::device_impl::device_impl(0)
+xrt::device::device(0)
+xrt::device::load_xclbin(foo.xclbin)
+xrt::device::~device()
+xrt::device_impl::~device_impl()
+
+```
+
+## Capture (Windows)
+From build directory launch main.exe application using cliloader.exe as follows
+
+```
+>bin\cliloader.exe bin\main.exe
+xrt::device_impl::device_impl(0)
+xrt::device::device(0)
+xrt::device::~device()
+capture|xrt::device::device(0)
+capture|xrt::device::load_xclbin(foo.xclbin)
+xrt::device::load_xclbin(foo.xclbin)
+capture|xrt::device::~device()
+xrt::device_impl::~device_impl()
+
+>bin\cliloader.exe bin\main.exe | findstr capture
+capture|xrt::device::device(0)
+capture|xrt::device::load_xclbin(foo.xclbin)
+capture|xrt::device::~device()
+```
 

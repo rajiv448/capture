@@ -6,6 +6,11 @@ if (NOT CMAKE_CXX_STANDARD)
 endif (NOT CMAKE_CXX_STANDARD)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Set to export all symbols in windows
+if (WIN32)
+	set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
 set(CMAKE_INSTALL_PREFIX "${PROJECT_BINARY_DIR}" CACHE PATH "..." FORCE)
 
 include_directories(
@@ -23,4 +28,6 @@ add_subdirectory(core/capture)
 add_subdirectory(core/common)
 add_subdirectory(core/include/xrt)
 add_subdirectory(test)
-
+if (WIN32)
+add_subdirectory(cliloader)
+endif()

@@ -16,6 +16,8 @@ Mirrors code from https://github.com/Xilinx/XRT.
 capture
 ├── cliloader
 │   ├── cliloader.cpp
+│   ├── getopt.c
+│   ├── getopt.h
 │   └── CMakeLists.txt
 ├── CMakeLists.txt
 ├── core
@@ -162,7 +164,7 @@ xrt::device_impl::~device_impl()
 From build directory launch main.exe application using cliloader.exe as follows
 
 ```
->bin\cliloader.exe bin\main.exe
+>bin\cliloader.exe -l bin\xrt_capture.dll bin\main.exe
 xrt::device_impl::device_impl(0)
 xrt::device::device(0)
 xrt::device::~device()
@@ -172,7 +174,7 @@ xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()
 xrt::device_impl::~device_impl()
 
->bin\cliloader.exe bin\main.exe | findstr capture
+>bin\cliloader.exe -l bin\xrt_capture.dll bin\main.exe | findstr capture
 capture|xrt::device::device(0)
 capture|xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()

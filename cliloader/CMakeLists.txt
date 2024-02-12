@@ -1,3 +1,2 @@
-add_executable(cliloader cliloader.cpp)
-#target_link_libraries(main xrt_coreutil)
+add_executable(cliloader cliloader.cpp getopt.c)
 install(TARGETS cliloader)

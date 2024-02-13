@@ -22,7 +22,7 @@ public:
 } // xrt
 
 ////////////////////////////////////////////////////////////////
-// xrt_core::capture::device C++ API implementations 
+// xrt_core::capture::device C++ API implementations
 ////////////////////////////////////////////////////////////////
 namespace xrt_core::capture::device {
 
@@ -36,9 +36,12 @@ device(unsigned int index)
 xrt::uuid
 load_xclbin(xrt::device& device, const std::string& fnm)
 {
+#ifdef ORG_CALL_BY_FNPTR
+  std::cout << "load_xclbin called through capture interface\n";
+#endif
   return device.load_xclbin(fnm);
 }
-  
+
 } // xrt_core::capture
 
 namespace xrt {
@@ -52,7 +55,7 @@ device(unsigned int index)
 {
   std::cout << "xrt::device::device(" << index << ")\n";
 }
-  
+
 device::
 ~device()
 {

@@ -11,6 +11,21 @@
 
 #ifdef _WIN32
 bool debug = false;
+bool dtable_populated = false;
+
+#ifdef ORG_CALL_BY_FNPTR
+typedef xrt::device* (*xrt_device_ctor)(int);
+typedef xrt::uuid (xrt::device::*xrt_device_load_xclbin)(const std::string&);
+typedef void (xrt::device::*xrt_device_dtor)();
+
+typedef struct _xrt_dtable {
+	xrt_device_ctor 		m_xrt_device_ctor;
+	xrt_device_load_xclbin	m_xrt_device_load_xclbin;
+	xrt_device_dtor			m_xrt_device_dtor;
+} xrt_dtable;
+
+xrt_dtable m_xrt_dtable;
+#endif
 
 // Make the page writable and replace the function pointer. Once replacement is
 // completed restore the page protection.
@@ -76,12 +91,29 @@ int idt_fixup( void *dummy ) {
       while (originalFirstThunk->u1.AddressOfData != NULL)
       {
         functionName = (PIMAGE_IMPORT_BY_NAME)((DWORD_PTR)imageBase + originalFirstThunk->u1.AddressOfData);
-        
+#ifdef ORG_CALL_BY_FNPTR
+		if (!dtable_populated) {
+			if ( !strcmp( functionName->Name, "??0device@xrt@@QEAA@I@Z" ) ) {
+				std::memcpy(&m_xrt_dtable.m_xrt_device_ctor, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
+				std::cout << "ctor \t\t= 0x" << std::hex << firstThunk->u1.Function << "\n";
+			}
+
+			if ( !strcmp( functionName->Name, "?load_xclbin@device@xrt@@QEAA?AVuuid@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z" ) ) {
+				std::memcpy(&m_xrt_dtable.m_xrt_device_load_xclbin, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
+				std::cout << "load_xclbin \t= 0x" << std::hex << firstThunk->u1.Function << "\n";
+			}
+
+			if ( !strcmp( functionName->Name, "??1device@xrt@@QEAA@XZ" ) ) {
+				std::memcpy(&m_xrt_dtable.m_xrt_device_dtor, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
+				std::cout << "dtor \t\t= 0x" << std::hex << firstThunk->u1.Function << "\n";
+			}
+		}
+#endif //#ifdef ORG_CALL_BY_FNPTR
         void * pFunction = GetProcAddress(library, functionName->Name);
         if(pFunction) {
           replaceFunction( firstThunk, pFunction);
         }
-        
+
         ++originalFirstThunk;
         ++firstThunk;
       }
@@ -96,18 +128,21 @@ int idt_fixup( void *dummy ) {
 #endif
 
 namespace xrt {
-
 device::
 device(unsigned int index)
   : m_handle(xrt_core::capture::device::device(index))
+  //: m_handle(m_xrt_dtable.m_xrt_device_ctor(index))
 {
   std::cout << "capture|xrt::device::device(" << index << ")\n";
 }
-  
+
 device::
 ~device()
 {
   std::cout << "capture|xrt::device::~device()\n";
+#if defined(ORG_CALL_BY_FNPTR) && defined(_WIN32)
+  (this->*m_xrt_dtable.m_xrt_device_dtor)();
+#endif
 }
 
 uuid
@@ -115,7 +150,11 @@ device::
 load_xclbin(const std::string& fnm)
 {
   std::cout << "capture|xrt::device::load_xclbin(" << fnm << ")\n";
+#if !defined(ORG_CALL_BY_FNPTR) || !defined(_WIN32)
   return xrt_core::capture::device::load_xclbin(*this, fnm);
+#else
+  return (this->*m_xrt_dtable.m_xrt_device_load_xclbin)(fnm);
+#endif
 }
 
 } // xrt

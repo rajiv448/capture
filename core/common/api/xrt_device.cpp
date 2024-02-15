@@ -11,11 +11,11 @@ class device_impl
 public:
   device_impl(unsigned int index)
   {
-    std::cout << "xrt::device_impl::device_impl(" << index << ")\n";
+    std::cout << "xrt::device_impl::device_impl(" << index << ") this = " << this << "\n";
   }
   ~device_impl()
   {
-    std::cout << "xrt::device_impl::~device_impl()\n";
+    std::cout << "xrt::device_impl::~device_impl() this = " << this << "\n";
   }
 };
 
@@ -29,6 +29,9 @@ namespace xrt_core::capture::device {
 std::shared_ptr<xrt::device_impl>
 device(unsigned int index)
 {
+#ifdef ORG_CALL_BY_FNPTR
+  std::cout << "ctor called through capture interface\n";
+#endif
   xrt::device device(index);
   return device.get_handle();
 }
@@ -53,20 +56,20 @@ device::
 device(unsigned int index)
   : m_handle(std::make_shared<device_impl>(index))
 {
-  std::cout << "xrt::device::device(" << index << ")\n";
+  std::cout << "xrt::device::device(" << index << ") this = " << this << "\n";
 }
 
 device::
 ~device()
 {
-  std::cout << "xrt::device::~device()\n";
+  std::cout << "xrt::device::~device() this = " << this << "\n";
 }
 
 uuid
 device::
 load_xclbin(const std::string& fnm)
 {
-  std::cout << "xrt::device::load_xclbin(" << fnm << ")\n";
+  std::cout << "xrt::device::load_xclbin(" << fnm << ") this = " << this << "\n";
   return {};
 }
 

@@ -14,7 +14,7 @@ bool debug = false;
 bool dtable_populated = false;
 
 #ifdef ORG_CALL_BY_FNPTR
-typedef xrt::device* (*xrt_device_ctor)(int);
+typedef xrt::device* (*xrt_device_ctor)(void*, int);
 typedef xrt::uuid (xrt::device::*xrt_device_load_xclbin)(const std::string&);
 typedef void (xrt::device::*xrt_device_dtor)();
 
@@ -130,9 +130,14 @@ int idt_fixup( void *dummy ) {
 namespace xrt {
 device::
 device(unsigned int index)
+#if !defined(ORG_CALL_BY_FNPTR) || !defined(_WIN32)
   : m_handle(xrt_core::capture::device::device(index))
-  //: m_handle(m_xrt_dtable.m_xrt_device_ctor(index))
+#endif
 {
+#if defined(ORG_CALL_BY_FNPTR) && defined(_WIN32)
+  (m_xrt_dtable.m_xrt_device_ctor)(this, index);
+  m_handle = this->get_handle();
+#endif
   std::cout << "capture|xrt::device::device(" << index << ")\n";
 }
 

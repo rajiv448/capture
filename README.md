@@ -121,7 +121,7 @@ xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()
 xrt::device_impl::~device_impl()
 
-% env LD_PRELOAD=$PWD/lib/libxrt_capture.so bin/main |grep capture
+% env LD_PRELOAD=$PWD/lib/libxrt_capture.so bin/main |grep ^capture
 capture|xrt::device::device(0)
 capture|xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()
@@ -174,7 +174,7 @@ xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()
 xrt::device_impl::~device_impl()
 
->bin\cliloader.exe -l bin\xrt_capture.dll bin\main.exe | findstr capture
+>bin\cliloader.exe -l bin\xrt_capture.dll bin\main.exe | findstr ^capture
 capture|xrt::device::device(0)
 capture|xrt::device::load_xclbin(foo.xclbin)
 capture|xrt::device::~device()

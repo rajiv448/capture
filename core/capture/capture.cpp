@@ -19,13 +19,44 @@ typedef xrt::uuid (xrt::device::*xrt_device_load_xclbin)(const std::string&);
 typedef void (xrt::device::*xrt_device_dtor)();
 
 typedef struct _xrt_dtable {
-	xrt_device_ctor 		m_xrt_device_ctor;
-	xrt_device_load_xclbin	m_xrt_device_load_xclbin;
-	xrt_device_dtor			m_xrt_device_dtor;
+  xrt_device_ctor         m_xrt_device_ctor;
+  xrt_device_load_xclbin  m_xrt_device_load_xclbin;
+  xrt_device_dtor         m_xrt_device_dtor;
 } xrt_dtable;
 
 xrt_dtable m_xrt_dtable;
+
+char func_name[3][256] = {
+    "xrt::device::device(unsigned int)",
+    "class xrt::uuid xrt::device::load_xclbin(class std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> > const &)",
+    "xrt::device::~device(void)"
+  };
+
 #endif
+
+#include <Dbghelp.h>
+#pragma comment(lib, "Dbghelp.lib")
+std::string demangle(const char* mangled) {
+  /* TODO : for some reason UnDecorateSymbolName is not returning size
+  hence we are using static rather than dynamic allocation.
+  DWORD length = UnDecorateSymbolName(mangled, nullptr, 0, UNDNAME_NAME_ONLY);
+    if (length == 0) {
+        // Din't returned the allocator size
+        std::cout << " length returned is 0?\n";
+        return mangled;
+    }
+  */
+
+  DWORD length = 256;
+    std::unique_ptr<char[]> buffer(new char[length]);
+    UnDecorateSymbolName(mangled, buffer.get(), length,
+      UNDNAME_NO_ACCESS_SPECIFIERS | UNDNAME_NO_ALLOCATION_LANGUAGE |
+      UNDNAME_NO_ALLOCATION_MODEL | UNDNAME_NO_MS_KEYWORDS);
+    //UNDNAME_NAME_ONLY);
+
+    return std::string(buffer.get());
+}
+
 
 // Make the page writable and replace the function pointer. Once replacement is
 // completed restore the page protection.
@@ -92,22 +123,16 @@ int idt_fixup( void *dummy ) {
       {
         functionName = (PIMAGE_IMPORT_BY_NAME)((DWORD_PTR)imageBase + originalFirstThunk->u1.AddressOfData);
 #ifdef ORG_CALL_BY_FNPTR
-		if (!dtable_populated) {
-			if ( !strcmp( functionName->Name, "??0device@xrt@@QEAA@I@Z" ) ) {
-				std::memcpy(&m_xrt_dtable.m_xrt_device_ctor, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
-				std::cout << "ctor \t\t= 0x" << std::hex << firstThunk->u1.Function << "\n";
-			}
+        int i;
+        for (i=0; i<3; i++) {
+          if(!strcmp( demangle(functionName->Name).c_str(), func_name[i] ))
+            break;
+        }
 
-			if ( !strcmp( functionName->Name, "?load_xclbin@device@xrt@@QEAA?AVuuid@2@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z" ) ) {
-				std::memcpy(&m_xrt_dtable.m_xrt_device_load_xclbin, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
-				std::cout << "load_xclbin \t= 0x" << std::hex << firstThunk->u1.Function << "\n";
-			}
-
-			if ( !strcmp( functionName->Name, "??1device@xrt@@QEAA@XZ" ) ) {
-				std::memcpy(&m_xrt_dtable.m_xrt_device_dtor, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
-				std::cout << "dtor \t\t= 0x" << std::hex << firstThunk->u1.Function << "\n";
-			}
-		}
+        if (i < 3) {
+          char* dest = reinterpret_cast<char*>(&m_xrt_dtable) + (i * sizeof(xrt_device_ctor));
+          std::memcpy(dest, &firstThunk->u1.Function, sizeof(firstThunk->u1.Function));
+        }
 #endif //#ifdef ORG_CALL_BY_FNPTR
         void * pFunction = GetProcAddress(library, functionName->Name);
         if(pFunction) {

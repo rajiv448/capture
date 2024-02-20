@@ -1,6 +1,11 @@
 #include <iostream>
+#ifdef _WIN32
 #include <windows.h>
 #include "getopt.h"
+#else
+#include <string.h>
+#include <unistd.h>
+#endif
 
 #define MAX_NUM_DLL 5
 #define DEBUG(_s, ...) \
@@ -13,6 +18,7 @@ static void die(const char *op) {
   exit(1);
 }
 
+#ifdef _WIN32
 static bool checkWow64(HANDLE parent, HANDLE child) {
   BOOL parentWow64 = FALSE;
   IsWow64Process(parent, &parentWow64);
@@ -31,13 +37,21 @@ static bool checkWow64(HANDLE parent, HANDLE child) {
 
   return true;
 }
+#else
+extern char **environ;
+#endif
 
 int main(int argc, char *argv[]) {
   int option;
   int dll_idx = 0;
   std::string dllpath[MAX_NUM_DLL];
+#ifdef _WIN32
   HMODULE h_dll[MAX_NUM_DLL];
   LPTHREAD_START_ROUTINE idt_fixup[MAX_NUM_DLL] = {NULL};
+  DWORD retval = 0;
+#else
+  int retval = 0;
+#endif
 
   while ((option = getopt(argc, argv, "vl:")) != -1 ) {
     switch (option) {
@@ -51,19 +65,40 @@ int main(int argc, char *argv[]) {
             << MAX_NUM_DLL << "). Exiting .. \n";
           exit(1);
         }
-        dllpath[dll_idx++] = optarg;
+        // Don't consider duplicate dll.
+        bool found = false;
+        for (int idx = 0; idx < dll_idx; idx++ ) {
+          if(!strcmp(optarg, dllpath[idx].c_str())) {
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          dllpath[dll_idx++] = optarg;
         break;
     }
   }
 
-  std::string apppath = argv[optind];
+  if (optind == argc) {
+    std::cout << "There should be alleast 1 argument without option switch \n";
+    exit(1);
+  }
+
+  std::string cmdline =  argv[optind++];
+
+  for (int idx = optind; idx < argc; idx++) {
+    cmdline += " ";
+    cmdline += argv[idx];
+  }
+
   if(debug)
-    std::cout << "Application to intercept = " << apppath << std::endl;
+    std::cout << "Application to intercept = " << cmdline << std::endl;
 
   for (int idx = 0; idx < dll_idx; idx++) {
     if(debug) std::cout << "dllpath = " << dllpath[idx] << std::endl;
   }
 
+#ifdef _WIN32
   for (int idx = 0; idx < dll_idx; idx++) {
     h_dll[idx] = LoadLibraryA(dllpath[idx].c_str());
 
@@ -87,31 +122,31 @@ int main(int argc, char *argv[]) {
       std::cout << "intrumentation hook found in " << dllpath[idx] << std::endl;
   }
 
-    // Create child process in suspended state:
-    DEBUG("creating child process with command line: %s\n", apppath.c_str());
-    PROCESS_INFORMATION pinfo = { 0 };
-    STARTUPINFOA sinfo = { 0 };
-    sinfo.cb = sizeof(sinfo);
-    if( CreateProcessA(
-            NULL,                   // lpApplicationName
-            (LPSTR)apppath.c_str(), // lpCommandLine
-            NULL,                   // lpProcessAttributes
-            NULL,                   // lpThreadAttributes
-            FALSE,                  // bInheritHandles
-            CREATE_SUSPENDED,       // dwCreationFlags
-            NULL,                   // lpEnvironment - use the cliloader environment
-            NULL,                   // lpCurrentDirectory - use the cliloader drive and directory
-            &sinfo,                 // lpStartupInfo
-            &pinfo) == FALSE )      // lpProcessInformation (out)
-    {
-      die("creating child process");
-    }
-    DEBUG("created child process\n");
+  // Create child process in suspended state:
+  DEBUG("creating child process with command line: %s\n", cmdline.c_str());
+  PROCESS_INFORMATION pinfo = { 0 };
+  STARTUPINFOA sinfo = { 0 };
+  sinfo.cb = sizeof(sinfo);
+  if( CreateProcessA(
+          NULL,                   // lpApplicationName
+          (LPSTR)cmdline.c_str(), // lpCommandLine
+          NULL,                   // lpProcessAttributes
+          NULL,                   // lpThreadAttributes
+          FALSE,                  // bInheritHandles
+          CREATE_SUSPENDED,       // dwCreationFlags
+          NULL,                   // lpEnvironment - use the cliloader environment
+          NULL,                   // lpCurrentDirectory - use the cliloader drive and directory
+          &sinfo,                 // lpStartupInfo
+          &pinfo) == FALSE )      // lpProcessInformation (out)
+  {
+    die("creating child process");
+  }
+  DEBUG("created child process\n");
 
-    // Check that we don't have a 32-bit and 64-bit mismatch:
-    if( checkWow64(GetCurrentProcess(), pinfo.hProcess) ) {
-      // There is no 32-bit and 64-bit mismatch.
-      // Start intercepting.
+  // Check that we don't have a 32-bit and 64-bit mismatch:
+  if( checkWow64(GetCurrentProcess(), pinfo.hProcess) ) {
+    // There is no 32-bit and 64-bit mismatch.
+    // Start intercepting.
 
     for (int idx = 0; idx < dll_idx; idx++) {
       void *childPath = NULL;
@@ -221,11 +256,36 @@ int main(int argc, char *argv[]) {
   DEBUG("child process completed, getting exit code\n");
 
   // Get return code and forward it
-  DWORD retval = 0;
   if( GetExitCodeProcess(pinfo.hProcess, &retval) == FALSE ) {
     die("getting child process exit code");
   }
   DEBUG("child process completed with exit code %u (%08X)\n", retval, retval);
+#else
+  char cwc[256] = {0};
+  const char * command = argv[optind-1];
+  char* const* command_args = argv + optind;
+  char *new_entry = (char *)malloc(512);
+  int str_idx = 0;
+  if(!getcwd(cwc,sizeof(cwc))) {
+    perror("getcwc");
+  }
+
+  snprintf(new_entry, 256, "LD_PRELOAD=");
+  str_idx = strlen(new_entry);
+
+  for (int idx=0; idx<dll_idx; idx++) {
+    snprintf(new_entry+str_idx, 256, "%s/%s ", cwc, dllpath[idx].c_str());
+    str_idx=strlen(new_entry);
+  }
+
+  if(debug) std::cout << "Adding to ENV : " << new_entry << "\n";
+
+  putenv(new_entry);
+
+  execve(command, command_args, environ);
+
+  perror("execve");
+#endif
 
   return retval;
 }

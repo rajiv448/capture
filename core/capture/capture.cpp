@@ -9,23 +9,240 @@
 #endif
 #include <functional>
 
-#ifdef _WIN32
-bool debug = false;
-bool dtable_populated = false;
-
 #ifdef ORG_CALL_BY_FNPTR
-typedef xrt::device* (*xrt_device_ctor)(void*, int);
-typedef xrt::uuid (xrt::device::*xrt_device_load_xclbin)(const std::string&);
-typedef void (xrt::device::*xrt_device_dtor)();
+typedef xrt::device * (*xrt_device_ctor) (void *, int);
+typedef xrt::uuid (xrt::device::*xrt_device_load_xclbin) (const std::string &);
+typedef void (xrt::device::*xrt_device_dtor) ();
 
 typedef struct _xrt_dtable {
-  xrt_device_ctor         m_xrt_device_ctor;
-  xrt_device_load_xclbin  m_xrt_device_load_xclbin;
-  xrt_device_dtor         m_xrt_device_dtor;
+  xrt_device_ctor m_xrt_device_ctor;
+  xrt_device_load_xclbin m_xrt_device_load_xclbin;
+  xrt_device_dtor m_xrt_device_dtor;
 } xrt_dtable;
 
 xrt_dtable m_xrt_dtable;
 
+#endif
+
+#ifdef __linux__
+#include <cstdlib>
+#include <cstring>
+#include <unistd.h>
+#include <bfd.h>
+#include <cxxabi.h>
+#include <dlfcn.h>
+
+#define LIB_NAME  ("libxrt_coreutil.so")
+
+/* This will create association between function name 
+ * and  function pointer of the original library file 
+ * which will be used to invoke API's from original library. 
+ */
+std::unordered_map < std::string, void **> MapFuncPtr = {
+  {"xrt::device::device(unsigned int)", (void **) &m_xrt_dtable.m_xrt_device_ctor},
+  {"xrt::device::load_xclbin(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)",
+      (void **) &m_xrt_dtable.m_xrt_device_load_xclbin},
+  {"xrt::device::~device()", (void **) &m_xrt_dtable.m_xrt_device_dtor}
+};
+
+/* 
+ * This will create association between function name (key)
+ * and mangled function name (value).
+ */
+std::unordered_map < std::string, std::string > FunMangled;
+
+/**
+ * This class will perform following operations. 
+ * 1. Read mangled symbols from .so file. 
+ * 2. perform demangling operation. 
+ * 3. update xrt_dtable which will be used to invoke original API's
+ */
+class DeviceRouter
+{
+private:
+  void *handle;
+  /*library Path */
+  std::string path;
+
+public:
+  int load_func_addr ();
+  int load_symbols ();
+
+  static std::shared_ptr < DeviceRouter > getDeviceRouterInstance ()  {
+    static auto ptr = std::make_shared < DeviceRouter > ();
+    return ptr;
+  }
+
+  DeviceRouter ()
+  {
+    if (!load_symbols ()) {
+      std::cout << "Failed to load symbols exiting application " << std::endl;
+      exit (1);
+    } else if (!load_func_addr ()) {
+      std::cout << "Failed to load function address exiting application " << std::endl;
+      exit (1);
+    }
+  }
+
+  ~DeviceRouter () {
+    if (handle)
+      dlclose (handle);
+  }
+};
+
+/**
+ * This function demangles the input mangled function.
+ */
+static std::string demangle (const char *mangled_name)
+{
+  int status;
+  char *demangled_name = abi::__cxa_demangle (mangled_name, nullptr, nullptr, &status);
+  if (status == 0) {
+    std::string result (demangled_name);
+    free (demangled_name);
+    return result;
+  } else {
+    // Demangling failed
+    return std::string (mangled_name);
+  }
+}
+
+static std::string find_library_path (const char *library_name)
+{
+  char *ld_library_path = getenv ("LD_LIBRARY_PATH");
+  if (ld_library_path == NULL) {
+    std::cout << "LD_LIBRARY_PATH is not set." << std::endl;
+    return "";
+  }
+
+  char *ld_library_path_copy = strdup (ld_library_path);
+  if (ld_library_path_copy == nullptr) {
+    std::cerr << "Error: Failed to allocate memory." << std::endl;
+    return "";
+  }
+
+  char *path = strtok (ld_library_path_copy, ":");
+  while (path != NULL) {
+    std::string full_path = std::string (path) + "/" + library_name;
+    if (access (full_path.c_str (), F_OK) != -1) {
+      free (ld_library_path_copy);
+      return full_path;
+    }
+    path = strtok (NULL, ":");
+  }
+
+  free (ld_library_path_copy);
+  return "";
+}
+
+/**
+ * This function will update the dispatch table 
+ * with address of the functions from original 
+ * library. 
+ */
+int DeviceRouter::load_func_addr ()
+{
+  // Load the shared object file
+  handle = dlopen (LIB_NAME, RTLD_LAZY);
+  if (!handle) {
+    std::cerr << "Error loading shared library: " << dlerror () << std::endl;
+    return 0;
+  }
+
+  for (auto it = FunMangled.begin (); it != FunMangled.end (); ++it) {
+    auto ptr_itr = MapFuncPtr.find (it->first);
+
+    if (ptr_itr != MapFuncPtr.end ()) {
+      void **temp = ptr_itr->second;
+      /* update the original function address in the dispatch table */
+      *temp = (dlsym (handle, it->second.c_str ()));
+      if (NULL == temp) {
+        std::cout << "Null Func address received " << std::endl;
+      }
+    } else {
+      std::cout << "Func not found: " << it->first << std::endl;
+    }
+  }
+  return 1;
+}
+
+/**
+ * This function will read mangled API's from library  and performs
+ * Demangling operation.
+ */
+int DeviceRouter::load_symbols ()
+{
+  path = find_library_path (LIB_NAME);
+
+  if (path.empty ()) {
+    std::cout << "unable to find library: " << LIB_NAME << std::endl;
+    return 0;
+  }
+
+  bfd *file = bfd_openr (path.c_str (), nullptr);
+  if (!file) {
+    std::cerr << "Error: Failed to open file." << std::endl;
+    return 0;
+  }
+
+  bfd_init ();
+
+  if (!bfd_check_format (file, bfd_object)) {
+    std::cerr << "Error: Not an object file." << std::endl;
+    bfd_close (file);
+    return 0;
+  }
+
+  long storage_needed = bfd_get_symtab_upper_bound (file);
+  if (storage_needed < 0) {
+    std::cerr << "Error: Failed to get symbol table upper bound." << std::endl;
+    bfd_close (file);
+    return 0;
+  }
+
+  asymbol **symbol_table = (asymbol **) malloc (storage_needed);
+  if (!symbol_table) {
+    std::cerr << "Error: Failed to allocate memory for symbol table." << std::
+        endl;
+    bfd_close (file);
+    return 0;
+  }
+
+  long symbols = bfd_canonicalize_symtab (file, symbol_table);
+  if (symbols < 0) {
+    std::cerr << "Error: Failed to read symbol table." << std::endl;
+    free (symbol_table);
+    bfd_close (file);
+    return 0;
+  }
+
+  for (long i = 0; i < symbols; ++i) {
+    // Skip if the Symbol is not global
+    if (!(symbol_table[i]->flags & BSF_GLOBAL)) {
+      continue;
+    }
+    // Check if the symbol is mangled
+    if (symbol_table[i]->name && symbol_table[i]->name[0] == '_') {
+      const char *pcstr = symbol_table[i]->name;
+      std::string symbol = pcstr;
+      std::string demangled_name = demangle (symbol_table[i]->name);
+      FunMangled[demangled_name] = symbol_table[i]->name;
+    }
+  }
+
+  free (symbol_table);
+  bfd_close (file);
+  return 1;
+}
+
+std::shared_ptr <DeviceRouter> dptr =  DeviceRouter::getDeviceRouterInstance ();
+
+#elif _WIN32
+
+bool debug = false;
+bool dtable_populated = false;
+
+#ifdef ORG_CALL_BY_FNPTR
 char func_name[3][256] = {
     "xrt::device::device(unsigned int)",
     "class xrt::uuid xrt::device::load_xclbin(class std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> > const &)",
@@ -152,39 +369,36 @@ int idt_fixup( void *dummy ) {
 }
 #endif
 
-namespace xrt {
-device::
-device(unsigned int index)
-#if !defined(ORG_CALL_BY_FNPTR) || !defined(_WIN32)
-  : m_handle(xrt_core::capture::device::device(index))
-#endif
+namespace xrt
 {
-#if defined(ORG_CALL_BY_FNPTR) && defined(_WIN32)
-  (m_xrt_dtable.m_xrt_device_ctor)(this, index);
-  m_handle = this->get_handle();
+  device::device (unsigned int index)
+#if !defined(ORG_CALL_BY_FNPTR)
+  :m_handle (xrt_core::capture::device::device (index))
 #endif
-  std::cout << "capture|xrt::device::device(" << index << ")\n";
-}
+  {
+#if defined(ORG_CALL_BY_FNPTR)
+    (m_xrt_dtable.m_xrt_device_ctor) (this, index);
+    m_handle = this->get_handle ();
+#endif
+    std::cout << "capture|xrt::device::device(" << index << ")\n";
+  }
 
-device::
-~device()
-{
-  std::cout << "capture|xrt::device::~device()\n";
-#if defined(ORG_CALL_BY_FNPTR) && defined(_WIN32)
-  (this->*m_xrt_dtable.m_xrt_device_dtor)();
+  device::~device ()
+  {
+    std::cout << "capture|xrt::device::~device()\n";
+#if defined(ORG_CALL_BY_FNPTR)
+    (this->*m_xrt_dtable.m_xrt_device_dtor) ();
 #endif
-}
+  }
 
-uuid
-device::
-load_xclbin(const std::string& fnm)
-{
-  std::cout << "capture|xrt::device::load_xclbin(" << fnm << ")\n";
-#if !defined(ORG_CALL_BY_FNPTR) || !defined(_WIN32)
-  return xrt_core::capture::device::load_xclbin(*this, fnm);
+  uuid device::load_xclbin (const std::string & fnm)
+  {
+    std::cout << "capture|xrt::device::load_xclbin(" << fnm << ")\n";
+#if defined(ORG_CALL_BY_FNPTR)
+    return (this->*m_xrt_dtable.m_xrt_device_load_xclbin) (fnm);
 #else
-  return (this->*m_xrt_dtable.m_xrt_device_load_xclbin)(fnm);
+    return xrt_core::capture::device::load_xclbin (*this, fnm);
 #endif
-}
+  }
 
-} // xrt
+}                               // xrt

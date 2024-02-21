@@ -26,9 +26,10 @@ xrt_dtable m_xrt_dtable;
 
 #ifdef __linux__
 #include <cstdlib>
+#include <fstream>
 #include <cstring>
 #include <unistd.h>
-#include <bfd.h>
+#include <elf.h>
 #include <cxxabi.h>
 #include <dlfcn.h>
 
@@ -107,32 +108,17 @@ static std::string demangle (const char *mangled_name)
   }
 }
 
-static std::string find_library_path (const char *library_name)
+static std::string find_library_path ()
 {
-  char *ld_library_path = getenv ("LD_LIBRARY_PATH");
+  char *ld_library_path = getenv ("LD_PRELOAD");
   if (ld_library_path == NULL) {
     std::cout << "LD_LIBRARY_PATH is not set." << std::endl;
     return "";
   }
 
-  char *ld_library_path_copy = strdup (ld_library_path);
-  if (ld_library_path_copy == nullptr) {
-    std::cerr << "Error: Failed to allocate memory." << std::endl;
-    return "";
-  }
-
-  char *path = strtok (ld_library_path_copy, ":");
-  while (path != NULL) {
-    std::string full_path = std::string (path) + "/" + library_name;
-    if (access (full_path.c_str (), F_OK) != -1) {
-      free (ld_library_path_copy);
-      return full_path;
-    }
-    path = strtok (NULL, ":");
-  }
-
-  free (ld_library_path_copy);
-  return "";
+  std::string full_path = std::string (ld_library_path);
+  
+  return full_path;
 }
 
 /**
@@ -149,6 +135,9 @@ int DeviceRouter::load_func_addr ()
     return 0;
   }
 
+  /**
+   * Get Function address's which are of intrest and ignore others. 
+   */
   for (auto it = FunMangled.begin (); it != FunMangled.end (); ++it) {
     auto ptr_itr = MapFuncPtr.find (it->first);
 
@@ -159,8 +148,6 @@ int DeviceRouter::load_func_addr ()
       if (NULL == temp) {
         std::cout << "Null Func address received " << std::endl;
       }
-    } else {
-      std::cout << "Func not found: " << it->first << std::endl;
     }
   }
   return 1;
@@ -170,68 +157,94 @@ int DeviceRouter::load_func_addr ()
  * This function will read mangled API's from library  and performs
  * Demangling operation.
  */
-int DeviceRouter::load_symbols ()
-{
-  path = find_library_path (LIB_NAME);
+int DeviceRouter::load_symbols () {
 
-  if (path.empty ()) {
-    std::cout << "unable to find library: " << LIB_NAME << std::endl;
-    return 0;
+  path = find_library_path ();
+
+  // Open the ELF file
+  std::ifstream elf_file("/home/siva/rk/rjv/capture/build/core/capture/libxrt_capture.so", std::ios::binary);
+
+  if (!elf_file.is_open()) {
+      std::cerr << "Failed to open ELF file: " << path << std::endl;
+      return 0;
   }
 
-  bfd *file = bfd_openr (path.c_str (), nullptr);
-  if (!file) {
-    std::cerr << "Error: Failed to open file." << std::endl;
-    return 0;
+  // Read the ELF header
+  Elf64_Ehdr elf_header;
+  elf_file.read(reinterpret_cast<char*>(&elf_header), sizeof(Elf64_Ehdr));
+  if (!elf_file) {
+      std::cerr << "Failed to read ELF header" << std::endl;
+      return 0;
   }
 
-  bfd_init ();
-
-  if (!bfd_check_format (file, bfd_object)) {
-    std::cerr << "Error: Not an object file." << std::endl;
-    bfd_close (file);
-    return 0;
+  // Check ELF magic number
+  if (memcmp(elf_header.e_ident, ELFMAG, SELFMAG) != 0) {
+      std::cerr << "Not an ELF file" << std::endl;
+      return 0;
   }
 
-  long storage_needed = bfd_get_symtab_upper_bound (file);
-  if (storage_needed < 0) {
-    std::cerr << "Error: Failed to get symbol table upper bound." << std::endl;
-    bfd_close (file);
-    return 0;
+  // Get the section header table
+  elf_file.seekg(elf_header.e_shoff);
+  Elf64_Shdr* section_headers = new Elf64_Shdr[elf_header.e_shnum];
+  elf_file.read(reinterpret_cast<char*>(section_headers), elf_header.e_shnum * sizeof(Elf64_Shdr));
+  if (!elf_file) {
+      std::cerr << "Failed to read section header table" << std::endl;
+      delete[] section_headers;
+      return 0;
   }
 
-  asymbol **symbol_table = (asymbol **) malloc (storage_needed);
-  if (!symbol_table) {
-    std::cerr << "Error: Failed to allocate memory for symbol table." << std::
-        endl;
-    bfd_close (file);
-    return 0;
+  // Find the symbol table section
+  Elf64_Shdr* symtab_section = nullptr;
+  for (int i = 0; i < elf_header.e_shnum; ++i) {
+      if (section_headers[i].sh_type == SHT_DYNSYM) {
+          symtab_section = &section_headers[i];
+          break;
+      }
   }
 
-  long symbols = bfd_canonicalize_symtab (file, symbol_table);
-  if (symbols < 0) {
-    std::cerr << "Error: Failed to read symbol table." << std::endl;
-    free (symbol_table);
-    bfd_close (file);
-    return 0;
+  if (symtab_section == nullptr) {
+      std::cerr << "Symbol table section not found" << std::endl;
+      delete[] section_headers;
+      return 0;
   }
 
-  for (long i = 0; i < symbols; ++i) {
-    // Skip if the Symbol is not global
-    if (!(symbol_table[i]->flags & BSF_GLOBAL)) {
-      continue;
-    }
-    // Check if the symbol is mangled
-    if (symbol_table[i]->name && symbol_table[i]->name[0] == '_') {
-      const char *pcstr = symbol_table[i]->name;
-      std::string symbol = pcstr;
-      std::string demangled_name = demangle (symbol_table[i]->name);
-      FunMangled[demangled_name] = symbol_table[i]->name;
-    }
+  // Read and print the mangled function names from the symbol table section
+  int num_symbols = symtab_section->sh_size / sizeof(Elf64_Sym);
+  for (int i = 0; i < num_symbols; ++i) {
+      Elf64_Sym symbol;
+      elf_file.seekg(symtab_section->sh_offset + i * sizeof(Elf64_Sym));
+      elf_file.read(reinterpret_cast<char*>(&symbol), sizeof(Elf64_Sym));
+      if (!elf_file) {
+          std::cerr << "Failed to read symbol table entry" << std::endl;
+          delete[] section_headers;
+          return 0;
+      }
+      // Check if the symbol is a function
+      if ((ELF64_ST_TYPE(symbol.st_info) == STT_FUNC) && 
+          (ELF64_ST_BIND(symbol.st_info) == STB_GLOBAL) &&
+          (ELF64_ST_VISIBILITY(symbol.st_other) == STV_DEFAULT) &&
+          (symbol.st_shndx != SHN_UNDEF))
+         {
+          char* symbol_name = new char[1000];
+          elf_file.seekg(section_headers[symtab_section->sh_link].sh_offset + symbol.st_name);
+          elf_file.read(symbol_name, 1000);
+          if (!elf_file) {
+              std::cerr << "Failed to read symbol name" << std::endl;
+              delete[] symbol_name;
+              delete[] section_headers;
+              return 0;
+          }
+          //std::cout <<"Mangled name: "<<symbol_name <<std::endl;
+          std::string demangled_name = demangle (symbol_name);
+          FunMangled[demangled_name] = symbol_name;
+
+          delete[] symbol_name;
+      }
   }
 
-  free (symbol_table);
-  bfd_close (file);
+  // Clean up
+  delete[] section_headers;
+
   return 1;
 }
 

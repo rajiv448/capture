@@ -5,7 +5,7 @@ capture.cpp)
 set(LIBS xrt_coreutil)
 
 if (UNIX)
-  list(APPEND LIBS dl bfd)
+  list(APPEND LIBS dl)
 endif()
 
 add_definitions( -DORG_CALL_BY_FNPTR )

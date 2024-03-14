@@ -32,17 +32,19 @@ xrt_dtable m_xrt_dtable;
 #include <elf.h>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <vector>
+#include <regex>
+#include <algorithm>
 
 #define LIB_NAME  ("libxrt_coreutil.so")
 
 /* This will create association between function name 
- * and  function pointer of the original library file 
+ * and function pointer of the original library file 
  * which will be used to invoke API's from original library. 
  */
-std::unordered_map < std::string, void **> MapFuncPtr = {
+std::unordered_map <std::string, void **> MapFuncPtr = {
   {"xrt::device::device(unsigned int)", (void **) &m_xrt_dtable.m_xrt_device_ctor},
-  {"xrt::device::load_xclbin(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)",
-      (void **) &m_xrt_dtable.m_xrt_device_load_xclbin},
+  {"xrt::device::load_xclbin(std::string const&)", (void **) &m_xrt_dtable.m_xrt_device_load_xclbin},
   {"xrt::device::~device()", (void **) &m_xrt_dtable.m_xrt_device_dtor}
 };
 
@@ -50,7 +52,7 @@ std::unordered_map < std::string, void **> MapFuncPtr = {
  * This will create association between function name (key)
  * and mangled function name (value).
  */
-std::unordered_map < std::string, std::string > FunMangled;
+std::unordered_map <std::string, std::string> FunMangled;
 
 /**
  * This class will perform following operations. 
@@ -101,6 +103,7 @@ static std::string demangle (const char *mangled_name)
   if (status == 0) {
     std::string result (demangled_name);
     free (demangled_name);
+
     return result;
   } else {
     // Demangling failed
@@ -117,7 +120,7 @@ static std::string find_library_path ()
   }
 
   std::string full_path = std::string (ld_library_path);
-  
+  full_path.erase(std::remove_if(full_path.begin(), full_path.end(), ::isspace), full_path.end()); 
   return full_path;
 }
 
@@ -153,16 +156,180 @@ int DeviceRouter::load_func_addr ()
   return 1;
 }
 
+
+static std::vector<std::string> get_func_params(std::string func_name) {
+
+  // Define regular expressions for function name and parameters
+  std::regex func_regex("([^\\(]+)\\(");
+  std::regex param_regex("\\((.*)\\)");
+ 
+  std::vector<std::string> param_list;
+
+  // Match function name
+  std::smatch func_match;
+  if (std::regex_search(func_name, func_match, func_regex)) {
+      //std::cout << "Function name: " << func_match[1] << std::endl;
+      param_list.push_back(func_match[1]); 
+  }
+  else {
+      //std::cout <<"Failed to get func_name from API String"<<std::endl;
+      return param_list;
+  }
+
+  // Match parameters
+  std::smatch param_match;
+  if (std::regex_search(func_name, param_match, param_regex)) {
+
+      if(param_match[1].str().empty()) {
+        return param_list;
+      }
+
+      // Extract parameters
+      std::string params = param_match[1];
+
+      size_t start = 0;
+      size_t angle_bracket_count = 0;
+
+      for (size_t i = 0; i < params.size(); ++i) {
+          if (params[i] == '<') {
+              angle_bracket_count++;
+          } else if (params[i] == '>') {
+              angle_bracket_count--;
+          } else if (params[i] == ',' && angle_bracket_count == 0) {
+              param_list.push_back(params.substr(start, i - start));
+              start = i + 1;
+          }
+      }
+    
+      /* This in case there is only one parameter */
+      if(0 == start) {
+        param_list.push_back(params);
+      }else {
+        param_list.push_back(params.substr(start)); // Add the last parameter
+      }
+#if 0
+      for (const auto& param : param_list) {
+          static int i=0;
+          std::cout << i++ << ": " << param << std::endl;
+      }
+#endif      
+  }
+  else {
+     // std::cout <<"Failed to get function params"<<std::endl;
+      param_list.clear();
+  }
+
+  return param_list;
+}
+
+static int match_params(const std::string fn_param, const std::string dm_param) {
+
+  if(fn_param == dm_param) {
+    return 0;
+  }
+  /* special case for std::string */
+  std::string substring = "std::string";
+  
+  size_t found = fn_param.find(substring);
+
+  if (found != std::string::npos) {
+
+     if ((dm_param == "std::string") || 
+         (dm_param == "const std::string")||
+         (dm_param == "std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&"))
+         {
+            return 0;
+         }
+  }
+
+  return 1;
+}
+
+static std::string find_func_name(std::string demangled_name) {
+
+  std::vector<std::string> demang_func = get_func_params(demangled_name);  
+
+  if (0 == demang_func.size()) {
+    //std::cout <<"failed to get func params: "<<demangled_name << std::endl;
+    return "";
+  }
+  int func_overload_cnt = 0;
+
+  std::string func;
+  /* check for function count */
+  for (const auto& pair : MapFuncPtr) {
+    std::string str = pair.first;
+    size_t found = str.find(demang_func[0]);
+    
+    /* skip if not found */
+    if (found == std::string::npos) {
+       continue;
+    }
+    else {
+      func_overload_cnt++;
+      if(1 == func_overload_cnt) {
+        func = pair.first;       
+      }
+    }
+  }
+
+  /* there is only one function with this name, return the func*/
+  if(1== func_overload_cnt) {
+    return func;
+  }
+
+  for (const auto& pair : MapFuncPtr) {
+
+    std::string str = pair.first;
+    size_t found = str.find(demang_func[0]);
+
+    /* skip if not found */
+    if (found == std::string::npos) {
+       continue;
+    }
+    std::vector<std::string> func = get_func_params(pair.first);
+
+    /* 1: check if func params are obtained properly */
+    if(0 == func.size()) {
+      //std::cout <<"failed to get func params: "<<pair.first << std::endl;
+      return "";
+    }
+
+    /*2: check if function name & number of arguments is matching */
+    if((func[0] == demang_func[0]) &&
+       (func.size() == demang_func.size())) {
+
+        int all_params_matched = 1;
+
+        /* 3: Iterate through each param and check if there is a match */ 
+        for(int i=1; i < func.size(); i++) {
+          if(!match_params(func[i], demang_func[i])) {
+            all_params_matched++; 
+          }
+        }
+
+        /* Function match identified, return func name */
+        if(all_params_matched == func.size()) {
+          return pair.first;
+        }
+
+    } else {
+      continue;
+    }
+  } // end of for loop
+
+  return "";
+}
+
 /**
  * This function will read mangled API's from library  and performs
  * Demangling operation.
  */
 int DeviceRouter::load_symbols () {
-
   path = find_library_path ();
 
   // Open the ELF file
-  std::ifstream elf_file("/home/siva/rk/rjv/capture/build/core/capture/libxrt_capture.so", std::ios::binary);
+  std::ifstream elf_file(path, std::ios::binary);
 
   if (!elf_file.is_open()) {
       std::cerr << "Failed to open ELF file: " << path << std::endl;
@@ -234,10 +401,13 @@ int DeviceRouter::load_symbols () {
               delete[] section_headers;
               return 0;
           }
-          //std::cout <<"Mangled name: "<<symbol_name <<std::endl;
           std::string demangled_name = demangle (symbol_name);
-          FunMangled[demangled_name] = symbol_name;
 
+          /* Now get the demangled name */
+          std::string func_name = find_func_name(demangled_name);;
+          if(!func_name.empty()) {
+             FunMangled[func_name] = symbol_name;
+          }
           delete[] symbol_name;
       }
   }
